@@ -1,0 +1,146 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <thread>
+#include <mutex>
+#include <chrono>
+#include <cstdlib>
+#include <speechapi_cxx.h> // Microsoft Speech SDK
+#include <httplib.h>       // HTTP requests
+#include <nlohmann/json.hpp>
+#include <opencv2/opencv.hpp>
+#include <filesystem>
+#include <gtkmm.h> // GTK for GUI
+
+using namespace std;
+using namespace cv;
+using json = nlohmann::json;
+
+// Replace these keys with actual API keys
+const string OPENAI_API_KEY = "YOUR_OPENAI_API_KEY";
+
+// Speech Recognition Functionality
+string recognizeSpeech() {
+    // Example placeholder for speech recognition functionality
+    cout << "Listening for speech...\n";
+    string capturedText = "Sample captured text"; // Replace with actual recognition logic
+    return capturedText;
+}
+
+// Translation Functionality
+string translateText(const string &text, const string &targetLanguage) {
+    httplib::Client client("https://translation.googleapis.com");
+    string apiKey = "YOUR_GOOGLE_TRANSLATION_API_KEY";
+    string endpoint = "/language/translate/v2?key=" + apiKey;
+
+    json body = {{"q", text}, {"target", targetLanguage}};
+    auto res = client.Post(endpoint.c_str(), body.dump(), "application/json");
+
+    if (res && res->status == 200) {
+        json response = json::parse(res->body);
+        return response["data"]["translations"][0]["translatedText"];
+    }
+    return "Translation failed.";
+}
+
+// ChatGPT Integration
+string interactWithChatGPT(const string &query) {
+    try {
+        httplib::Client client("https://api.openai.com");
+        string endpoint = "/v1/completions";
+        json body = {
+            {"model", "text-davinci-002"},
+            {"prompt", "Extract information about " + query},
+            {"max_tokens", 150}};
+
+        httplib::Headers headers = {{"Authorization", "Bearer " + OPENAI_API_KEY}};
+        auto res = client.Post(endpoint.c_str(), headers, body.dump(), "application/json");
+
+        if (res && res->status == 200) {
+            json response = json::parse(res->body);
+            return response["choices"][0]["text"].get<string>();
+        }
+    } catch (const exception &e) {
+        cerr << "Error interacting with ChatGPT: " << e.what() << endl;
+    }
+    return "Error interacting with ChatGPT.";
+}
+
+// Text-to-Speech (TTS) Functionality
+void talk(const string &text) {
+    string command = "espeak \"" + text + "\"";
+    system(command.c_str());
+}
+
+// Main GUI Application
+class SpeechInterface : public Gtk::Window {
+public:
+    SpeechInterface() {
+        set_title("Speech Recognition and Interaction");
+        set_default_size(600, 500);
+
+        mainBox.set_orientation(Gtk::ORIENTATION_VERTICAL);
+        mainBox.set_margin(20);
+
+        inputLabel.set_text("Spoken Input:");
+        inputText.set_editable(false);
+
+        outputLabel.set_text("Textual Output:");
+        outputText.set_editable(false);
+
+        startButton.set_label("Start Speaking");
+        startButton.signal_clicked().connect(sigc::mem_fun(*this, &SpeechInterface::onStartSpeaking));
+
+        mainBox.pack_start(inputLabel, Gtk::PACK_SHRINK);
+        mainBox.pack_start(inputText, Gtk::PACK_SHRINK);
+        mainBox.pack_start(startButton, Gtk::PACK_SHRINK);
+        mainBox.pack_start(outputLabel, Gtk::PACK_SHRINK);
+        mainBox.pack_start(outputText, Gtk::PACK_EXPAND_WIDGET);
+
+        add(mainBox);
+        show_all_children();
+    }
+
+private:
+    Gtk::Box mainBox;
+    Gtk::Label inputLabel, outputLabel;
+    Gtk::TextView inputText, outputText;
+    Gtk::Button startButton;
+
+    void onStartSpeaking() {
+        thread([this]() {
+            string spokenText = recognizeSpeech();
+            if (!spokenText.empty()) {
+                Glib::ustring output = Glib::ustring::compose("You said: %1", spokenText);
+                inputText.get_buffer()->set_text(output);
+
+                if (spokenText.find("alexa") != string::npos) {
+                    spokenText.erase(spokenText.find("alexa"), 5);
+                    string response = interactWithChatGPT(spokenText);
+                    displayOutput(response);
+                } else if (spokenText.find("play") != string::npos) {
+                    string query = spokenText.substr(spokenText.find("play") + 5);
+                    string command = "start https://www.youtube.com/results?search_query=" + query;
+                    system(command.c_str());
+                    displayOutput("Playing " + query + " on YouTube.");
+                } else {
+                    string translatedText = translateText(spokenText, "te");
+                    displayOutput(translatedText);
+                }
+            }
+        }).detach();
+    }
+
+    void displayOutput(const string &text) {
+        Glib::ustring output = Glib::ustring::compose("%1", text);
+        outputText.get_buffer()->set_text(output);
+        talk(text);
+    }
+};
+
+// Main Function
+int main(int argc, char *argv[]) {
+    auto app = Gtk::Application::create(argc, argv, "com.speech.interface");
+    SpeechInterface window;
+    return app->run(window);
+}
